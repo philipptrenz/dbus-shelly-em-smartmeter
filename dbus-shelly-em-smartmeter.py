@@ -162,6 +162,9 @@ class DbusShellyemService:
        #self._dbusservice['/Ac/L3/Power'] = meter_data['emeters'][2]['power']
        #self._dbusservice['/Ac/L3/Energy/Forward'] = (meter_data['emeters'][2]['total']/1000)
        #self._dbusservice['/Ac/L3/Energy/Reverse'] = (meter_data['emeters'][2]['total_returned']/1000) 
+       
+       self._dbusservice['/Ac/Current'] = self._dbusservice['/Ac/L1/Current']  
+       self._dbusservice['/Ac/Power'] = self._dbusservice['/Ac/L1/Power']
 
        self._dbusservice['/Ac/Energy/Forward'] = self._dbusservice['/Ac/L1/Energy/Forward']
        #+ self._dbusservice['/Ac/L2/Energy/Forward'] + self._dbusservice['/Ac/L3/Energy/Forward']
