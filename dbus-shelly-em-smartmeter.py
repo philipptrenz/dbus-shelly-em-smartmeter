@@ -27,6 +27,9 @@ sys.path.insert(
 from vedbus import VeDbusService
 
 
+PHASES = ["L1", "L2", "L3"]
+
+
 class DbusShellyemService:
     def __init__(
         self,
@@ -35,9 +38,18 @@ class DbusShellyemService:
         productname="Shelly EM",
         connection="Shelly EM HTTP JSON service",
     ):
-        config = self._getConfig()
-        deviceinstance = int(config["DEFAULT"]["Deviceinstance"])
-        customname = config["DEFAULT"]["CustomName"]
+        self.config = self._getConfig()
+        deviceinstance = int(self.config["DEFAULT"]["Deviceinstance"])
+        customname = self.config["DEFAULT"]["CustomName"]
+
+        self.phase = self.config["DEFAULT"]["Phase"].upper()
+        if self.phase not in PHASES:
+            raise ValueError(
+                "Phase %s is not supported, must be one of 'L1', 'L2', 'L3'"
+                % (self.config["DEFAULT"]["Phase"])
+            )
+
+        self.shelly_url = self._getShellyStatusUrl()
 
         self._dbusservice = VeDbusService(
             "{}.http_{:02d}".format(servicename, deviceinstance)
@@ -110,8 +122,7 @@ class DbusShellyemService:
         return config
 
     def _getSignOfLifeInterval(self):
-        config = self._getConfig()
-        value = config["DEFAULT"]["SignOfLifeLog"]
+        value = self.config["DEFAULT"]["SignOfLifeLog"]
 
         if not value:
             value = 0
@@ -119,30 +130,29 @@ class DbusShellyemService:
         return int(value)
 
     def _getShellyStatusUrl(self):
-        config = self._getConfig()
-        accessType = config["DEFAULT"]["AccessType"]
+        accessType = self.config["DEFAULT"]["AccessType"]
 
         if accessType == "OnPremise":
             URL = "http://%s:%s@%s/status" % (
-                config["ONPREMISE"]["Username"],
-                config["ONPREMISE"]["Password"],
-                config["ONPREMISE"]["Host"],
+                self.config["ONPREMISE"]["Username"],
+                self.config["ONPREMISE"]["Password"],
+                self.config["ONPREMISE"]["Host"],
             )
             URL = URL.replace(":@", "")
         else:
             raise ValueError(
-                "AccessType %s is not supported" % (config["DEFAULT"]["AccessType"])
+                "AccessType %s is not supported"
+                % (self.config["DEFAULT"]["AccessType"])
             )
 
         return URL
 
     def _getShellyData(self):
-        URL = self._getShellyStatusUrl()
-        meter_r = requests.get(url=URL)
+        meter_r = requests.get(url=self.shelly_url)
 
         # check for response
         if not meter_r:
-            raise ConnectionError("No response from Shelly EM - %s" % (URL))
+            raise ConnectionError("No response from Shelly EM - %s" % (self.shelly_url))
 
         meter_data = meter_r.json()
 
@@ -159,51 +169,45 @@ class DbusShellyemService:
         logging.info("--- End: sign of life ---")
         return True
 
+    def _map_meter_data(self, phase, d=None):
+        self._dbusservice[f"/Ac/{ phase }/Voltage"] = d["voltage"] if d else 0
+        self._dbusservice[f"/Ac/{ phase }/Current"] = (
+            d["power"] / d["voltage"] if d else 0
+        )
+        self._dbusservice[f"/Ac/{ phase }/Power"] = d["power"] if d else 0
+        self._dbusservice[f"/Ac/{ phase }/Energy/Forward"] = (
+            (d["total"] / 1000) if d else 0
+        )
+        self._dbusservice[f"/Ac/{ phase }/Energy/Reverse"] = (
+            (d["total_returned"] / 1000) if d else 0
+        )
+
+    def _calculate_total(self):
+        self._dbusservice["/Ac/Current"] = sum(
+            [self._dbusservice[f"/Ac/{ ph }/Current"] for ph in PHASES]
+        )
+        self._dbusservice["/Ac/Power"] = sum(
+            [self._dbusservice[f"/Ac/{ ph }/Power"] for ph in PHASES]
+        )
+        self._dbusservice["/Ac/Energy/Forward"] = sum(
+            [self._dbusservice[f"/Ac/{ ph }/Energy/Forward"] for ph in PHASES]
+        )
+        self._dbusservice["/Ac/Energy/Reverse"] = sum(
+            [self._dbusservice[f"/Ac/{ ph }/Energy/Reverse"] for ph in PHASES]
+        )
+
     def _update(self):
         try:
-            # get data from Shelly em
+            # get data from Shelly EM
             meter_data = self._getShellyData()
 
-            # send data to DBus
-            self._dbusservice["/Ac/L1/Voltage"] = meter_data["emeters"][0]["voltage"]
+            for phase in PHASES:
+                self._map_meter_data(
+                    phase=phase,
+                    d=meter_data["emeters"][0] if phase == self.phase else None,
+                )
 
-            current = (
-                meter_data["emeters"][0]["power"] / meter_data["emeters"][0]["voltage"]
-            )
-            self._dbusservice["/Ac/L1/Current"] = current
-
-            self._dbusservice["/Ac/L1/Power"] = meter_data["emeters"][0]["power"]
-            self._dbusservice["/Ac/L1/Energy/Forward"] = (
-                meter_data["emeters"][0]["total"] / 1000
-            )
-            self._dbusservice["/Ac/L1/Energy/Reverse"] = (
-                meter_data["emeters"][0]["total_returned"] / 1000
-            )
-
-            # self._dbusservice['/Ac/Power'] = meter_data['total_power'] # positive: consumption, negative: feed into grid
-            # self._dbusservice['/Ac/L2/Voltage'] = meter_data['emeters'][1]['voltage']
-            # self._dbusservice['/Ac/L2/Current'] = meter_data['emeters'][1]['current']
-            # self._dbusservice['/Ac/L2/Power'] = meter_data['emeters'][1]['power']
-            # self._dbusservice['/Ac/L2/Energy/Forward'] = (meter_data['emeters'][1]['total']/1000)
-            # self._dbusservice['/Ac/L2/Energy/Reverse'] = (meter_data['emeters'][1]['total_returned']/1000)
-
-            # self._dbusservice['/Ac/L3/Voltage'] = meter_data['emeters'][2]['voltage']
-            # self._dbusservice['/Ac/L3/Current'] = meter_data['emeters'][2]['current']
-            # self._dbusservice['/Ac/L3/Power'] = meter_data['emeters'][2]['power']
-            # self._dbusservice['/Ac/L3/Energy/Forward'] = (meter_data['emeters'][2]['total']/1000)
-            # self._dbusservice['/Ac/L3/Energy/Reverse'] = (meter_data['emeters'][2]['total_returned']/1000)
-
-            self._dbusservice["/Ac/Current"] = self._dbusservice["/Ac/L1/Current"]
-            self._dbusservice["/Ac/Power"] = self._dbusservice["/Ac/L1/Power"]
-
-            self._dbusservice["/Ac/Energy/Forward"] = self._dbusservice[
-                "/Ac/L1/Energy/Forward"
-            ]
-            # + self._dbusservice['/Ac/L2/Energy/Forward'] + self._dbusservice['/Ac/L3/Energy/Forward']
-            self._dbusservice["/Ac/Energy/Reverse"] = self._dbusservice[
-                "/Ac/L1/Energy/Reverse"
-            ]
-            # + self._dbusservice['/Ac/L2/Energy/Reverse'] + self._dbusservice['/Ac/L3/Energy/Reverse']
+            self._calculate_total()
 
             # logging
             logging.debug(
@@ -219,11 +223,10 @@ class DbusShellyemService:
             )
             logging.debug("---")
 
-            # increment UpdateIndex - to show that new data is available
-            index = self._dbusservice["/UpdateIndex"] + 1  # increment index
-            if index > 255:  # maximum value of the index
-                index = 0  # overflow from 255 to 0
-            self._dbusservice["/UpdateIndex"] = index
+            # increment UpdateIndex - to show that new data is available (value between 0 and 255)
+            self._dbusservice["/UpdateIndex"] = (
+                self._dbusservice["/UpdateIndex"] + 1
+            ) % 256
 
             # update lastupdate vars
             self._lastUpdate = time.time()
